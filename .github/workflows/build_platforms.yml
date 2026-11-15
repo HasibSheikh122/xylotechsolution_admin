@@ -20,14 +20,17 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Ensure Windows Platform & Font Assets
+      - name: Recreate Clean Windows Runner & Font Asset
         shell: pwsh
         run: |
+          if (Test-Path "windows") { Remove-Item -Recurse -Force "windows" }
           flutter create --platforms=windows .
           New-Item -ItemType Directory -Force -Path "assets/fonts" | Out-Null
           if (-not (Test-Path "assets/fonts/BlackOpsOne-Regular.ttf")) {
             Invoke-WebRequest -Uri "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf" -OutFile "assets/fonts/BlackOpsOne-Regular.ttf"
           }
+          $pub = Get-Content "pubspec.yaml" | Where-Object { $_ -notmatch "msix:" }
+          $pub | Set-Content "pubspec.yaml" -Encoding UTF8
 
       - name: Install Dependencies
         run: flutter pub get
@@ -35,9 +38,25 @@ jobs:
       - name: Build Windows Release
         run: flutter build windows --release --no-tree-shake-icons
 
-      - name: Generate Windows Setup Wizard (Next -> Next -> Install)
+      - name: Package Windows Release ZIP
         shell: pwsh
         run: |
+          $rel = (Get-ChildItem -Path "build\windows" -Recurse -Directory -Filter "Release" | Select-Object -First 1).FullName
+          Compress-Archive -Path "$rel\*" -DestinationPath "XyloTechSolution_Admin_Windows.zip" -Force
+
+      - name: Upload Windows Ready-to-Run Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-App-Package-ZIP
+          path: XyloTechSolution_Admin_Windows.zip
+
+      - name: Generate Windows Setup Wizard (Desktop & Start Menu Installer)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
           $rel = (Get-ChildItem -Path "build\windows" -Recurse -Directory -Filter "Release" | Select-Object -First 1).FullName
           $lines = @(
             "[Setup]",
@@ -62,18 +81,20 @@ jobs:
           $lines | Set-Content -Path "installer.iss" -Encoding UTF8
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer.iss"
 
+      - name: Upload Windows Full Setup Installer
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Full-Setup-Installer
+          path: XyloTechSolution_Admin_Setup.exe
+
       - name: Generate Windows .msix Package (No-EXE Installer)
         continue-on-error: true
         shell: pwsh
         run: |
           flutter pub add --dev msix
           dart run msix:create --build-windows false --dont-install-cert
-
-      - name: Upload Windows Full Setup Installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: Windows-Full-Setup-Installer
-          path: XyloTechSolution_Admin_Setup.exe
 
       - name: Upload Windows .msix App Package
         if: always()
@@ -116,7 +137,7 @@ jobs:
           open(p, "w").write(s)
           '
 
-      - name: Remove msix dev dependency on Linux before APK build
+      - name: Clean pubspec and get dependencies
         run: |
           python3 -c '
           p = "pubspec.yaml"

@@ -20,70 +20,68 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Ensure Font Asset Exists
+      - name: Ensure Windows Platform & Font Assets
         shell: pwsh
         run: |
+          flutter create --platforms=windows .
           New-Item -ItemType Directory -Force -Path "assets/fonts" | Out-Null
           if (-not (Test-Path "assets/fonts/BlackOpsOne-Regular.ttf")) {
             Invoke-WebRequest -Uri "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf" -OutFile "assets/fonts/BlackOpsOne-Regular.ttf"
           }
 
-      - name: Install Dependencies & MSIX Tool
-        run: |
-          flutter pub get
-          flutter pub add --dev msix
+      - name: Install Dependencies
+        run: flutter pub get
 
       - name: Build Windows Release
         run: flutter build windows --release --no-tree-shake-icons
 
-      - name: 1. Generate Windows .msix Package
-        run: dart run msix:create
-
-      - name: 2. Generate Windows Setup Wizard (.exe Installer)
+      - name: Generate Windows Setup Wizard (Next -> Next -> Install)
         shell: pwsh
         run: |
-          python -c "
-          import glob, os, subprocess
-          rel = glob.glob('build/windows/**/Release', recursive=True)[0].replace('/', '\\\\')
-          iss = f'''[Setup]
-          AppName=XyloTechSolution Admin
-          AppVersion=1.0.0
-          DefaultDirName={{autopf}}\\XyloTechSolutionAdmin
-          DefaultGroupName=XyloTechSolution Admin
-          OutputDir=.
-          OutputBaseFilename=XyloTechSolution_Admin_Setup
-          Compression=lzma2
-          SolidCompression=yes
+          $rel = (Get-ChildItem -Path "build\windows" -Recurse -Directory -Filter "Release" | Select-Object -First 1).FullName
+          $lines = @(
+            "[Setup]",
+            "AppName=XyloTechSolution Admin",
+            "AppVersion=1.0.0",
+            "DefaultDirName={autopf}\XyloTechSolutionAdmin",
+            "DefaultGroupName=XyloTechSolution Admin",
+            "OutputDir=.",
+            "OutputBaseFilename=XyloTechSolution_Admin_Setup",
+            "Compression=lzma2",
+            "SolidCompression=yes",
+            "[Tasks]",
+            "Name: `"desktopicon`"; Description: `"Create a desktop shortcut`"",
+            "[Files]",
+            "Source: `"$rel\*`"; DestDir: `"{app}`"; Flags: ignoreversion recursesubdirs createallsubdirs",
+            "[Icons]",
+            "Name: `"{group}\XyloTechSolution Admin`"; Filename: `"{app}\xylotechsolution_admin.exe`"",
+            "Name: `"{autodesktop}\XyloTechSolution Admin`"; Filename: `"{app}\xylotechsolution_admin.exe`"; Tasks: desktopicon",
+            "[Run]",
+            "Filename: `"{app}\xylotechsolution_admin.exe`"; Description: `"Launch XyloTechSolution Admin`"; Flags: nowait postinstall skipifsilent"
+          )
+          $lines | Set-Content -Path "installer.iss" -Encoding UTF8
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer.iss"
 
-          [Tasks]
-          Name: \"desktopicon\"; Description: \"Create a desktop shortcut\"
+      - name: Generate Windows .msix Package (No-EXE Installer)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          flutter pub add --dev msix
+          dart run msix:create --build-windows false --dont-install-cert
 
-          [Files]
-          Source: \"{rel}\\*\"; DestDir: \"{{app}}\"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-          [Icons]
-          Name: \"{{group}}\\XyloTechSolution Admin\"; Filename: \"{{app}}\\xylotechsolution_admin.exe\"
-          Name: \"{{autodesktop}}\\XyloTechSolution Admin\"; Filename: \"{{app}}\\xylotechsolution_admin.exe\"; Tasks: desktopicon
-
-          [Run]
-          Filename: \"{{app}}\\xylotechsolution_admin.exe\"; Description: \"Launch XyloTechSolution Admin\"; Flags: nowait postinstall skipifsilent
-          '''
-          with open('installer.iss', 'w') as f:
-              f.write(iss)
-          subprocess.run([r'C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe', 'installer.iss'], check=True)
-          "
-
-      - name: Upload Windows .msix App Package (No-EXE Installer)
-        uses: actions/upload-artifact@v4
-        with:
-          name: Windows-MSIX-App-Installer
-          path: build/windows/**/*.msix
-
-      - name: Upload Windows Setup Wizard
+      - name: Upload Windows Full Setup Installer
         uses: actions/upload-artifact@v4
         with:
           name: Windows-Full-Setup-Installer
           path: XyloTechSolution_Admin_Setup.exe
+
+      - name: Upload Windows .msix App Package
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-MSIX-App-Installer
+          path: build/windows/**/*.msix
 
   build_android_apk:
     name: Build Android (.apk)
@@ -104,13 +102,28 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Ensure Font Asset Exists
+      - name: Regenerate Clean Android Gradle Wrapper & Inject INTERNET Permission
         run: |
+          rm -rf android
+          flutter create --platforms=android --org com.xylotechsolution .
           mkdir -p assets/fonts
           [ -f assets/fonts/BlackOpsOne-Regular.ttf ] || curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf" -o assets/fonts/BlackOpsOne-Regular.ttf
+          python3 -c '
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p).read()
+          if "android.permission.INTERNET" not in s:
+              s = s.replace("<application", "<uses-permission android:name=\"android.permission.INTERNET\"/>\n    <uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>\n    <application android:usesCleartextTraffic=\"true\"", 1)
+          open(p, "w").write(s)
+          '
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Remove msix dev dependency on Linux before APK build
+        run: |
+          python3 -c '
+          p = "pubspec.yaml"
+          lines = [ln for ln in open(p).readlines() if "msix:" not in ln]
+          open(p, "w").writelines(lines)
+          '
+          flutter pub get
 
       - name: Build Android APK
         run: flutter build apk --release --no-tree-shake-icons

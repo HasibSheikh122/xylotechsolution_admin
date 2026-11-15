@@ -20,51 +20,60 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Ensure Font Asset Exists
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "assets/fonts" | Out-Null
+          if (-not (Test-Path "assets/fonts/BlackOpsOne-Regular.ttf")) {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf" -OutFile "assets/fonts/BlackOpsOne-Regular.ttf"
+          }
+
       - name: Install Dependencies & MSIX Tool
         run: |
           flutter pub get
           flutter pub add --dev msix
 
       - name: Build Windows Release
-        run: flutter build windows --release
+        run: flutter build windows --release --no-tree-shake-icons
 
-      - name: 1. Generate Windows .msix App Package (No .exe needed)
-        run: |
-          dart run msix:create --display-name "XyloTechSolution Admin" --publisher-display-name "XYLO Tech Solution" --identity-name "com.xylotechsolution.admin" --install-certificate false
+      - name: 1. Generate Windows .msix Package
+        run: dart run msix:create
 
-      - name: 2. Generate Windows Setup Wizard (Desktop & Start Menu Shortcut)
+      - name: 2. Generate Windows Setup Wizard (.exe Installer)
         shell: pwsh
         run: |
-          $releaseDir = (Get-ChildItem -Path "build\windows" -Recurse -Directory -Filter "Release" | Select-Object -First 1).FullName
-          $issContent = @"
-          [Setup]
+          python -c "
+          import glob, os, subprocess
+          rel = glob.glob('build/windows/**/Release', recursive=True)[0].replace('/', '\\\\')
+          iss = f'''[Setup]
           AppName=XyloTechSolution Admin
           AppVersion=1.0.0
-          DefaultDirName={autopf}\XyloTechSolutionAdmin
+          DefaultDirName={{autopf}}\\XyloTechSolutionAdmin
           DefaultGroupName=XyloTechSolution Admin
           OutputDir=.
           OutputBaseFilename=XyloTechSolution_Admin_Setup
           Compression=lzma2
           SolidCompression=yes
-          ArchitecturesInstallIn64BitMode=x64compatible
 
           [Tasks]
-          Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
+          Name: \"desktopicon\"; Description: \"Create a desktop shortcut\"
 
           [Files]
-          Source: "$releaseDir\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          Source: \"{rel}\\*\"; DestDir: \"{{app}}\"; Flags: ignoreversion recursesubdirs createallsubdirs
 
           [Icons]
-          Name: "{group}\XyloTechSolution Admin"; Filename: "{app}\xylotechsolution_admin.exe"
-          Name: "{autodesktop}\XyloTechSolution Admin"; Filename: "{app}\xylotechsolution_admin.exe"; Tasks: desktopicon
+          Name: \"{{group}}\\XyloTechSolution Admin\"; Filename: \"{{app}}\\xylotechsolution_admin.exe\"
+          Name: \"{{autodesktop}}\\XyloTechSolution Admin\"; Filename: \"{{app}}\\xylotechsolution_admin.exe\"; Tasks: desktopicon
 
           [Run]
-          Filename: "{app}\xylotechsolution_admin.exe"; Description: "Launch XyloTechSolution Admin"; Flags: nowait postinstall skipifsilent
-          "@
-          Set-Content -Path "installer.iss" -Value $issContent
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer.iss"
+          Filename: \"{{app}}\\xylotechsolution_admin.exe\"; Description: \"Launch XyloTechSolution Admin\"; Flags: nowait postinstall skipifsilent
+          '''
+          with open('installer.iss', 'w') as f:
+              f.write(iss)
+          subprocess.run([r'C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe', 'installer.iss'], check=True)
+          "
 
-      - name: Upload Windows .msix Package (No-EXE Direct Installer)
+      - name: Upload Windows .msix App Package (No-EXE Installer)
         uses: actions/upload-artifact@v4
         with:
           name: Windows-MSIX-App-Installer
@@ -83,7 +92,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -95,11 +104,16 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Ensure Font Asset Exists
+        run: |
+          mkdir -p assets/fonts
+          [ -f assets/fonts/BlackOpsOne-Regular.ttf ] || curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf" -o assets/fonts/BlackOpsOne-Regular.ttf
+
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Build Android APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
@@ -120,11 +134,16 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Ensure Font Asset Exists
+        run: |
+          mkdir -p assets/fonts
+          [ -f assets/fonts/BlackOpsOne-Regular.ttf ] || curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/blackopsone/BlackOpsOne-Regular.ttf" -o assets/fonts/BlackOpsOne-Regular.ttf
+
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Build Unsigned iOS App
-        run: flutter build ios --release --no-codesign
+        run: flutter build ios --release --no-codesign --no-tree-shake-icons
 
       - name: Package Runner.app into .ipa
         run: |

@@ -1,0 +1,140 @@
+name: Build Windows MSIX Installer, Android APK & iOS IPA
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build_windows_installers:
+    name: Build Windows (.msix & Setup Installer)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Dependencies & MSIX Tool
+        run: |
+          flutter pub get
+          flutter pub add --dev msix
+
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: 1. Generate Windows .msix App Package (No .exe needed)
+        run: |
+          dart run msix:create --display-name "XyloTechSolution Admin" --publisher-display-name "XYLO Tech Solution" --identity-name "com.xylotechsolution.admin" --install-certificate false
+
+      - name: 2. Generate Windows Setup Wizard (Desktop & Start Menu Shortcut)
+        shell: pwsh
+        run: |
+          $releaseDir = (Get-ChildItem -Path "build\windows" -Recurse -Directory -Filter "Release" | Select-Object -First 1).FullName
+          $issContent = @"
+          [Setup]
+          AppName=XyloTechSolution Admin
+          AppVersion=1.0.0
+          DefaultDirName={autopf}\XyloTechSolutionAdmin
+          DefaultGroupName=XyloTechSolution Admin
+          OutputDir=.
+          OutputBaseFilename=XyloTechSolution_Admin_Setup
+          Compression=lzma2
+          SolidCompression=yes
+          ArchitecturesInstallIn64BitMode=x64compatible
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
+
+          [Files]
+          Source: "$releaseDir\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\XyloTechSolution Admin"; Filename: "{app}\xylotechsolution_admin.exe"
+          Name: "{autodesktop}\XyloTechSolution Admin"; Filename: "{app}\xylotechsolution_admin.exe"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\xylotechsolution_admin.exe"; Description: "Launch XyloTechSolution Admin"; Flags: nowait postinstall skipifsilent
+          "@
+          Set-Content -Path "installer.iss" -Value $issContent
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer.iss"
+
+      - name: Upload Windows .msix Package (No-EXE Direct Installer)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-MSIX-App-Installer
+          path: build/windows/**/*.msix
+
+      - name: Upload Windows Setup Wizard
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Full-Setup-Installer
+          path: XyloTechSolution_Admin_Setup.exe
+
+  build_android_apk:
+    name: Build Android (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Android APK
+        run: flutter build apk --release
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK-Installer
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  build_ios_ipa:
+    name: Build iOS (.ipa)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Unsigned iOS App
+        run: flutter build ios --release --no-codesign
+
+      - name: Package Runner.app into .ipa
+        run: |
+          mkdir -p build/ios/ipa/Payload
+          cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
+          cd build/ios/ipa
+          zip -r xylotechsolution_admin_ios.ipa Payload
+
+      - name: Upload iOS .ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-IPA-Installer
+          path: build/ios/ipa/xylotechsolution_admin_ios.ipa
